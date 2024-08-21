@@ -12,18 +12,14 @@ import os
 # ChromaDB와 SentenceTransformer 임베딩 초기화
 embedding_model = HuggingFaceEmbeddings(model_name='snunlp/KR-SBERT-V40K-klueNLI-augSTS')
 persist_directory = "./chromadb_data"
-collection_name = "test"
 
 # ChromaDB 벡터 스토어 초기화 및 데이터 로드
 if os.path.exists(persist_directory) and len(os.listdir(persist_directory)) > 0:
-    print("기존 데이터베이스 로드 중...")
     vectorstore = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
 else:
-    print("데이터베이스 생성 중...")
     df = pd.read_csv("./watermoonInfo.csv")
     texts = df['text'].tolist()
     metadatas = [{"text": text} for text in texts]
-    
     vectorstore = Chroma.from_texts(texts, embedding_model, metadatas=metadatas, persist_directory=persist_directory)
 
 # Retriever 초기화
@@ -36,27 +32,31 @@ llm = Ollama(model="EEVE-Korean-Instruct-10.8B")
 st.set_page_config(page_title="MyEcho", page_icon="🦦")
 st.title("Chat MyEcho 🦦")
 
+# 사이드바에서 대화 제목 입력
+st.sidebar.header("Chat Settings")
+chat_title = st.sidebar.text_input("Enter chat title", value="My Chat")
+
 # 세션 상태 초기화
 if 'messages' not in st.session_state:
     st.session_state['messages'] = []
 if 'chat_history' not in st.session_state:
     st.session_state['chat_history'] = ChatMessageHistory()
+if 'full_history' not in st.session_state:
+    st.session_state['full_history'] = []
 
 # 채팅 메시지 출력 함수
-def print_messages():
-    """세션 상태의 메시지를 출력하는 함수."""
-    for message in st.session_state['messages']:
-        st.chat_message(message.role).write(message.content)
-
-print_messages()
+for message in st.session_state['messages']:
+    st.chat_message(message.role).write(message.content)
 
 # 사용자 입력 처리
 user_input = st.chat_input("Watermoon님에 대한 궁금한 사항을 물어보세요! 👀")
 
 if user_input:
     # 사용자 메시지 저장 및 히스토리에 추가
-    st.session_state['messages'].append(ChatMessage(role="user", content=user_input))
+    user_message = ChatMessage(role="user", content=user_input)
+    st.session_state['messages'].append(user_message)
     st.session_state['chat_history'].add_user_message(user_input)
+    st.session_state['full_history'].append(user_message)
     st.chat_message("user").write(user_input)
 
     # 프롬프트 설정
@@ -70,8 +70,8 @@ if user_input:
 
     # 응답 생성 중 상태 표시
     response_placeholder = st.empty()
-    # with st.spinner("답변 생성 중..."):
-    # 최근 대화 5개 추출
+
+    # 최근 대화 10개 추출 (템플릿용)
     recent_messages = st.session_state['chat_history'].messages[-10:]
 
     # 이전 대화를 프롬프트에 추가
@@ -91,14 +91,36 @@ if user_input:
     # 이전 대화 내용과 함께 최종 프롬프트 생성
     final_prompt = f"{previous_messages}\n\n{prompt.format(query=user_input, info=info)}"
 
-    # # LLM의 스트리밍 기능 사용
+    # LLM의 스트리밍 기능 사용
     response = ""
     for chunk in llm.stream(final_prompt):
         response += chunk
         response_placeholder.write(response)
 
     # 최종 응답 저장 및 화면에 출력
-    st.session_state['messages'].append(ChatMessage(role="assistant", content=response))
+    assistant_message = ChatMessage(role="assistant", content=response)
+    st.session_state['messages'].append(assistant_message)
     st.session_state['chat_history'].add_ai_message(response)
+    st.session_state['full_history'].append(assistant_message)
     response_placeholder.empty()
     st.chat_message("assistant").write(response)
+
+# 사이드바에서 대화 다운로드 버튼
+if st.session_state['full_history']:
+    chat_history_text = "\n".join(
+        f"{msg.role}: {msg.content}" for msg in st.session_state['full_history']
+    )
+    st.sidebar.download_button(
+        label="Download Chat",
+        data=chat_history_text,
+        file_name=f"{chat_title}.txt",
+        mime="text/plain"
+    )
+
+# 대화 리셋 버튼 구현
+if st.session_state['full_history']:
+    if st.sidebar.button("Reset Chat"):
+        # 세션 상태 초기화, 세션 내 모든 데이터 삭제
+        for key in st.session_state.keys():
+            del st.session_state[key]
+        st.rerun()
