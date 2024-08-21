@@ -3,87 +3,31 @@ from langchain_community.llms import Ollama
 from langchain_core.messages import ChatMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.chat_message_histories import ChatMessageHistory
-from sentence_transformers import SentenceTransformer
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.vectorstores import Chroma
+from langchain_core.vectorstores import VectorStoreRetriever
 import pandas as pd
-import chromadb
-from chromadb.config import Settings
 import os
-from tqdm import tqdm
 
-# ChromaDB 설정
-settings = Settings(
-    persist_directory="./chromadb_data"
-)
-client = chromadb.PersistentClient(settings=settings)
-
-# SentenceTransformer 모델 초기화
-model = SentenceTransformer('snunlp/KR-SBERT-V40K-klueNLI-augSTS')
-
-def embedding_exists(directory):
-    """임베딩 데이터가 존재하는지 확인하는 함수."""
-    return os.path.exists(directory) and len(os.listdir(directory)) > 0
-
-def insert_data_into_collection(df, model, collection):
-    """데이터프레임을 받아 임베딩을 생성하고 ChromaDB 컬렉션에 삽입하는 함수."""
-    print("insert_data_into_collection 호출됨")
-    ids, metadatas, embeddings = [], [], []
-
-    # 데이터프레임의 각 행에 대해 임베딩 생성
-    for index, row in tqdm(df.iterrows(), total=df.shape[0]):
-        text = row['text']
-        metadata = {"text": text}
-        embedding = model.encode(text, normalize_embeddings=True)
-        ids.append(str(index))
-        metadatas.append(metadata)
-        embeddings.append(embedding.tolist())  # numpy 배열을 리스트로 변환
-
-    # 청크 단위로 데이터를 컬렉션에 추가
-    chunk_size = 1024
-    for start_idx in tqdm(range(0, len(embeddings), chunk_size)):
-        end_idx = min(start_idx + chunk_size, len(embeddings))
-        collection.add(
-            embeddings=embeddings[start_idx:end_idx],
-            ids=ids[start_idx:end_idx],
-            metadatas=metadatas[start_idx:end_idx]
-        )
-
-def create_embeddings(df, model, answers):
-    """데이터프레임을 받아 임베딩을 생성하고 ChromaDB 컬렉션에 삽입하는 함수."""
-    print("create_embeddings 호출됨")
-    ids, metadatas, embeddings = [], [], []
-
-    for index, row in tqdm(df.iterrows(), total=df.shape[0]):
-        text = row['text']
-        metadata = {"text": text}
-        embedding = model.encode(text, normalize_embeddings=True)
-        ids.append(str(index))
-        metadatas.append(metadata)
-        embeddings.append(embedding.tolist())  # numpy 배열을 리스트로 변환
-
-    # 청크 단위로 데이터를 컬렉션에 추가
-    chunk_size = 1024
-    for start_idx in tqdm(range(0, len(embeddings), chunk_size)):
-        end_idx = min(start_idx + chunk_size, len(embeddings))
-        answers.add(
-            embeddings=embeddings[start_idx:end_idx],
-            ids=ids[start_idx:end_idx],
-            metadatas=metadatas[start_idx:end_idx]
-        )
-    answers.persist()  # 데이터 저장
-
-# ChromaDB 컬렉션 설정
+# ChromaDB와 SentenceTransformer 임베딩 초기화
+embedding_model = HuggingFaceEmbeddings(model_name='snunlp/KR-SBERT-V40K-klueNLI-augSTS')
+persist_directory = "./chromadb_data"
 collection_name = "test"
-collections = client.list_collections()
-collection_exists = any(collection.name == collection_name for collection in collections)
 
-if collection_exists:
-    print("컬렉션 존재")
-    answers = client.get_collection(name=collection_name)
+# ChromaDB 벡터 스토어 초기화 및 데이터 로드
+if os.path.exists(persist_directory) and len(os.listdir(persist_directory)) > 0:
+    print("기존 데이터베이스 로드 중...")
+    vectorstore = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
 else:
-    print("컬렉션 존재하지 않음")
-    answers = client.create_collection(name=collection_name)
+    print("데이터베이스 생성 중...")
     df = pd.read_csv("./watermoonInfo.csv")
-    insert_data_into_collection(df, model, answers)
+    texts = df['text'].tolist()
+    metadatas = [{"text": text} for text in texts]
+    
+    vectorstore = Chroma.from_texts(texts, embedding_model, metadatas=metadatas, persist_directory=persist_directory)
+
+# Retriever 초기화
+retriever = VectorStoreRetriever(vectorstore=vectorstore)
 
 # Ollama 모델 초기화
 llm = Ollama(model="EEVE-Korean-Instruct-10.8B")
@@ -123,38 +67,35 @@ if user_input:
                 아래의 정보를 기반으로 질문과 가장 유사한 정보를 선택하여 답변 작성해주세요:
                 {info}
                 답변:""")
-    
+
     # 응답 생성 중 상태 표시
     response_placeholder = st.empty()
-    with st.spinner("답변 생성 중..."):
-        messages = st.session_state['chat_history'].messages
-        recent_messages = messages[-10:]
+    # with st.spinner("답변 생성 중..."):
+    # 최근 대화 5개 추출
+    recent_messages = st.session_state['chat_history'].messages[-10:]
 
-        # 메시지를 문자열로 변환
-        previous_messages = "\n".join(
-            f"human: {msg.content}\n" for msg in recent_messages[::2]
-        ) + "\n" + "\n".join(
-            f"ai: {msg.content}\n" for msg in recent_messages[1::2]
-        )
+    # 이전 대화를 프롬프트에 추가
+    previous_messages = "\n".join(
+        f"human: {msg.content}" if i % 2 == 0 else f"ai: {msg.content}"
+        for i, msg in enumerate(recent_messages)
+    )
 
-        # 쿼리 임베딩 생성
-        query_embedding = model.encode(user_input, normalize_embeddings=True).tolist()
-        result = answers.query(
-            query_embeddings=[query_embedding],
-            n_results=2
-        )
+    # 사용자의 질문에 '요약'이라는 단어가 있는지 확인
+    if "요약" in user_input:
+        info = ""  # 벡터 DB를 사용하지 않고 빈값으로 설정
+    else:
+        # 사용자의 질문을 바탕으로 정보 검색
+        results = retriever.get_relevant_documents(user_input)
+        info = "\n".join(result.metadata["text"] for result in results)
 
-        # 정보 추출
-        metadatas = result['metadatas'][0]
-        info = "\n".join(str(data) for data in metadatas)
+    # 이전 대화 내용과 함께 최종 프롬프트 생성
+    final_prompt = f"{previous_messages}\n\n{prompt.format(query=user_input, info=info)}"
 
-        final_prompt = f"{previous_messages}\n\n{prompt.format(query=user_input, info=info)}"
-
-        # LLM의 스트리밍 기능 사용
-        response = ""
-        for chunk in llm.stream(final_prompt):
-            response += chunk
-            response_placeholder.write(response)
+    # # LLM의 스트리밍 기능 사용
+    response = ""
+    for chunk in llm.stream(final_prompt):
+        response += chunk
+        response_placeholder.write(response)
 
     # 최종 응답 저장 및 화면에 출력
     st.session_state['messages'].append(ChatMessage(role="assistant", content=response))
