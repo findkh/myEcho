@@ -1,115 +1,136 @@
+import os
 import streamlit as st
-from langchain_community.llms import Ollama
+import ollama
+import pandas as pd
 from langchain_core.messages import ChatMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.vectorstores import Chroma
-from langchain_core.vectorstores import VectorStoreRetriever
-import pandas as pd
-import os
 
-# ChromaDB와 SentenceTransformer 임베딩 초기화
-embedding_model = HuggingFaceEmbeddings(model_name='snunlp/KR-SBERT-V40K-klueNLI-augSTS')
-persist_directory = "./chromadb_data"
-
-# ChromaDB 벡터 스토어 초기화 및 데이터 로드
-if os.path.exists(persist_directory) and len(os.listdir(persist_directory)) > 0:
-    vectorstore = Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
-else:
+# 벡터 스토어 초기화 함수
+def initialize_vectorstore(persist_directory, embedding_model):
+    if os.path.exists(persist_directory) and os.listdir(persist_directory):
+        return Chroma(persist_directory=persist_directory, embedding_function=embedding_model)
+    # CSV 파일에서 데이터 읽기
     df = pd.read_csv("./watermoonInfo.csv")
     texts = df['text'].tolist()
     metadatas = [{"text": text} for text in texts]
-    vectorstore = Chroma.from_texts(texts, embedding_model, metadatas=metadatas, persist_directory=persist_directory)
+    return Chroma.from_texts(texts, embedding_model, metadatas=metadatas, persist_directory=persist_directory)
 
-# Retriever 초기화
-retriever = VectorStoreRetriever(vectorstore=vectorstore)
+# 세션 상태 초기화 함수
+def initialize_session_state():
+    if 'messages' not in st.session_state:
+        st.session_state['messages'] = []
+    if 'chat_history' not in st.session_state:
+        st.session_state['chat_history'] = ChatMessageHistory()
+    if 'full_history' not in st.session_state:
+        st.session_state['full_history'] = []
 
-# Ollama 모델 초기화
-llm = Ollama(model="EEVE-Korean-Instruct-10.8B")
+# 메시지 저장 함수
+def save_message(role, content):
+    message = ChatMessage(role=role, content=content)
+    st.session_state['messages'].append(message)
+    st.session_state['chat_history'].add_message(message)
+    st.session_state['full_history'].append(message)
+
+# 프롬프트 템플릿 생성 함수
+def create_prompt_template(user_input, info):
+    return ChatPromptTemplate.from_template(f"""
+        나의 이름은 'MyEcho'로, AI 어시스턴트입니다. 
+        저는 오직 'watermoon'이라는 사람에 대한 정보만을 바탕으로 답변을 제공합니다. 
+        'watermoon'은 이 프로그램을 만든 실존 인물입니다.
+        
+        사용자가 물어본 질문: {user_input}
+        
+        아래에 제공된 정보만을 참고하여 질문에 답변하세요. 주어진 정보 외의 내용을 추측하거나 추가하지 마세요:
+        {info}
+        
+        답변:""")
+
+# 사용자 입력 처리 함수
+def process_input(user_input, retriever):
+    if any(keyword in user_input for keyword in ["요약", "안녕", "하이"]):
+        info = ""  # 벡터 DB를 사용하지 않고 빈값으로 설정
+        return info
+    else:
+        # retriever를 사용하여 문서 가져오기
+        result = retriever.get_relevant_documents(user_input)
+        print(result)
+
+        # 가져온 문서의 page_content를 직접 반환
+        return result[0].page_content
+
+# 채팅 히스토리 표시 함수
+def display_chat_history():
+    for message in st.session_state['messages']:
+        st.chat_message(message.role).write(message.content)
+
+# LLM 스트리밍 응답 함수
+def llm_stream(model_name, messages):
+    response = ollama.chat(model_name, messages, stream=True)
+    for chunk in response:
+        yield chunk['message']['content']
+
+# 모델과 Embedding 초기화
+embedding_model = HuggingFaceEmbeddings(model_name='snunlp/KR-SBERT-V40K-klueNLI-augSTS')
+persist_directory = "./chromadb_data"
+vectorstore = initialize_vectorstore(persist_directory, embedding_model)
+
+# Retriever 설정
+retriever = vectorstore.as_retriever(search_kwargs={'k': 1})
 
 # Streamlit 페이지 설정
 st.set_page_config(page_title="MyEcho", page_icon="🦦")
 st.title("Chat MyEcho 🦦")
 
+# 세션 상태 초기화
+initialize_session_state()
+
 # 사이드바에서 대화 제목 입력
 st.sidebar.header("Chat Settings")
 chat_title = st.sidebar.text_input("Enter chat title", value="My Chat")
 
-# 세션 상태 초기화
-if 'messages' not in st.session_state:
-    st.session_state['messages'] = []
-if 'chat_history' not in st.session_state:
-    st.session_state['chat_history'] = ChatMessageHistory()
-if 'full_history' not in st.session_state:
-    st.session_state['full_history'] = []
+# 사이드바에서 모델 선택
+try:
+    OLLAMA_MODELS = ollama.list()["models"]
+except Exception as e:
+    st.warning("Ollama를 먼저 설치해주세요.")
+    st.stop()
 
-# 채팅 메시지 출력 함수
-for message in st.session_state['messages']:
-    st.chat_message(message.role).write(message.content)
+model_names = [model["name"] for model in OLLAMA_MODELS]
+llm_name = st.sidebar.selectbox("Choose Agent", [""] + model_names)
+if not llm_name:
+    st.stop()
+
+# 채팅 메시지 출력
+display_chat_history()
 
 # 사용자 입력 처리
 user_input = st.chat_input("Watermoon님에 대한 궁금한 사항을 물어보세요! 👀")
 
 if user_input:
-    # 사용자 메시지 저장 및 히스토리에 추가
-    user_message = ChatMessage(role="user", content=user_input)
-    st.session_state['messages'].append(user_message)
-    st.session_state['chat_history'].add_user_message(user_input)
-    st.session_state['full_history'].append(user_message)
     st.chat_message("user").write(user_input)
+    save_message("user", user_input)
+    info = process_input(user_input, retriever)
+    prompt_template = create_prompt_template(user_input, info)
 
-    # 프롬프트 설정
-    prompt = ChatPromptTemplate.from_template("""
-                나의 이름은 'MyEcho'로 AI 어시스턴트입니다.
-                사용자가 어떤 질문을 하든, 모든 질문에 대해 'Watermoon'이라는 사람에 관한 답변을 간략하게 제공합니다. 
-                사용자가 물어본 질문: {query}
-                아래의 정보를 기반으로 질문과 가장 유사한 정보를 선택하여 답변 작성해주세요:
-                {info}
-                답변:""")
-
-    # 응답 생성 중 상태 표시
-    response_placeholder = st.empty()
-
-    # 최근 대화 10개 추출 (템플릿용)
+    # 이전 대화 내용 추가 및 프롬프트 생성
     recent_messages = st.session_state['chat_history'].messages[-10:]
+    previous_messages = "\n".join(f"{msg.role}: {msg.content}" for msg in recent_messages)
+    final_prompt = f"{previous_messages}\n\n{prompt_template}"
 
-    # 이전 대화를 프롬프트에 추가
-    previous_messages = "\n".join(
-        f"human: {msg.content}" if i % 2 == 0 else f"ai: {msg.content}"
-        for i, msg in enumerate(recent_messages)
-    )
+    # AI 응답을 스트리밍하면서 UI에 표시
+    with st.chat_message("assistant"):
+        chat_box = st.empty()
+        response_message = chat_box.write_stream(llm_stream(llm_name, [{"content": final_prompt, "role": "user"}]))
 
-    # 사용자의 질문에 '요약'이라는 단어가 있는지 확인
-    if "요약" in user_input:
-        info = ""  # 벡터 DB를 사용하지 않고 빈값으로 설정
-    else:
-        # 사용자의 질문을 바탕으로 정보 검색
-        results = retriever.get_relevant_documents(user_input)
-        info = "\n".join(result.metadata["text"] for result in results)
-
-    # 이전 대화 내용과 함께 최종 프롬프트 생성
-    final_prompt = f"{previous_messages}\n\n{prompt.format(query=user_input, info=info)}"
-
-    # LLM의 스트리밍 기능 사용
-    response = ""
-    for chunk in llm.stream(final_prompt):
-        response += chunk
-        response_placeholder.write(response)
-
-    # 최종 응답 저장 및 화면에 출력
-    assistant_message = ChatMessage(role="assistant", content=response)
-    st.session_state['messages'].append(assistant_message)
-    st.session_state['chat_history'].add_ai_message(response)
-    st.session_state['full_history'].append(assistant_message)
-    response_placeholder.empty()
-    st.chat_message("assistant").write(response)
+    # 최종 응답을 세션 상태에 저장
+    save_message("assistant", response_message)
 
 # 사이드바에서 대화 다운로드 버튼
 if st.session_state['full_history']:
-    chat_history_text = "\n".join(
-        f"{msg.role}: {msg.content}" for msg in st.session_state['full_history']
-    )
+    chat_history_text = "\n".join(f"{msg.role}: {msg.content}" for msg in st.session_state['full_history'])
     st.sidebar.download_button(
         label="Download Chat",
         data=chat_history_text,
@@ -118,9 +139,6 @@ if st.session_state['full_history']:
     )
 
 # 대화 리셋 버튼 구현
-if st.session_state['full_history']:
-    if st.sidebar.button("Reset Chat"):
-        # 세션 상태 초기화, 세션 내 모든 데이터 삭제
-        for key in st.session_state.keys():
-            del st.session_state[key]
-        st.rerun()
+if st.session_state['full_history'] and st.sidebar.button("Reset Chat"):
+    st.session_state.clear()
+    st.rerun()
