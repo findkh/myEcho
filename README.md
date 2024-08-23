@@ -1,27 +1,22 @@
 # myEcho
 MyEcho는 Streamlit 기반의 대화형 AI 어시스턴트 웹 애플리케이션입니다.  
-이 애플리케이션은 사용자의 질문에 대해 csv 파일에서 정보를 검색하고, LLM 모델을 통해 답변을 제공합니다.
+이 애플리케이션은 사용자의 질문에 대해 CSV 파일에서 정보를 검색하고, LLM 모델을 통해 답변을 제공합니다.
 
 ## 기간
 - 2024.08.20. ~ 2024.08.23.
 
 ## 기술 스택
-- **Streamlit**
-    - 웹 애플리케이션을 빠르고 쉽게 개발할 수 있는 프레임워크로, 대화형 UI를 구현하는 데 사용했습니다. Streamlit의 `session_state`와 `chat_message` 컴포넌트를 활용해 대화 기록을 관리하고 실시간으로 사용자와 AI 간의 대화를 UI에 표시할 수 있습니다.
-- **Ollama**
-    - LLM(대형 언어 모델) 기반의 대화형 AI 모델을 활용하기 위해 사용했습니다. `ollama.chat()` 함수를 통해 AI 모델의 응답을 스트리밍 방식으로 받아와 실시간으로 사용자에게 제공합니다.
-- **Pandas**
-    - CSV 파일에서 데이터를 로드하고 처리하는 데 사용했습니다. 사용자의 질문에 적절한 정보를 추출하기 위해 CSV 파일에서 텍스트 데이터를 읽어오고, 이를 이후 벡터화하는 데 필요한 원본 데이터로 사용합니다.
-- **LangChain**
-    - **LangChain Core**: 대화형 AI 시스템에서 메시지 처리를 담당하고, `ChatPromptTemplate`를 통해 사용자 입력에 대한 최적의 프롬프트를 생성합니다.
-    - **LangChain Community**: `ChatMessageHistory`를 사용해 대화 히스토리를 관리하고, 이를 Streamlit UI에 실시간으로 반영합니다.
-    - **LangChain Embeddings**: 문서 임베딩을 위해 HuggingFace의 사전 훈련된 모델과 통합되어 사용됩니다. 이를 통해 CSV 파일의 텍스트 데이터를 벡터로 변환하여 검색 성능을 향상시킵니다.
-- **HuggingFace**
-    - `HuggingFaceEmbeddings`를 사용해 텍스트 데이터를 벡터로 임베딩하여 벡터 스토어에서 효율적인 검색이 가능하도록 지원합니다. 
-
+- Streamlit
+- Ollama
+- Pandas
+- LangChain
+- ChromaDB
 
 ## 운영 체제
 - MacOS
+
+## IDE
+- Visual Studio Code
 
 ## 사용 방법 
 ```
@@ -35,11 +30,10 @@ streamlit run main.py
 ## 주요 기능
 1. 대화 기록 관리
     - Streamlit의 session_state를 활용하여 사용자의 질문과 AI의 응답을 저장합니다.
-    - Langchain Community의 ChatMessageHistory를 사용해 대화 히스토리를 관리하고, 이를 UI에 실시간으로 표시합니다.
 2. 문서 검색 및 정보 제공
     - Pandas를 사용하여 csv 파일에서 텍스트 데이터를 로드하고, LangChain의 Chroma 벡터 데이터베이스를 저장합니다. 사용자의 질문에 대해 벡터 검색을 통해 관련 정보를 추출합니다.
-3. 프롬프트 생성 및 RAG 적용
-    - LangChain의 ChatPromptTemplate를 사용하여, 검색된 정보를 기반으로 프롬프트를 생성합니다. 이 프롬프트는 사용자의 질문에 대한 최적의 답변을 생성하기 위해 AI 모델에 전달됩니다.
+3. 프롬프트 구성
+    - 벡터 DB에서 검색된 정보와 이전 대화 내용을 기반으로 프롬프트를 구성합니다. 이 프롬프트는 사용자의 질문에 대한 최적의 답변을 생성하기 위해 AI 모델에 전달됩니다.
 4. AI 모델 응답 처리
     - Ollama의 chat()함수를 사용해 선택된 모델로부터 응답을 스트리밍합니다.
     - streamlit의 chat_message 컴포넌트를 사용해 실시간으로 응답을 UI에 표시합니다.
@@ -48,9 +42,9 @@ streamlit run main.py
     - 대화 리셋: 사이드바에서 대화 기록을 초기화하는 버튼을 제공하며, 버튼 클릭 시 session_state를 클리어하고 애플리케이션을 재시작합니다.
 
 ## 구현 화면
-![myecho](https://github.com/user-attachments/assets/3b960347-b919-488d-897e-ea0aba16f58e)
-
-
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/3b960347-b919-488d-897e-ea0aba16f58e" alt="myecho"/>
+</p>
 
 ## 추후 보완점
 1. 예외 처리 강화:

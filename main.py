@@ -3,8 +3,6 @@ import streamlit as st
 import ollama
 import pandas as pd
 from langchain_core.messages import ChatMessage
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.vectorstores import Chroma
 
@@ -22,31 +20,44 @@ def initialize_vectorstore(persist_directory, embedding_model):
 def initialize_session_state():
     if 'messages' not in st.session_state:
         st.session_state['messages'] = []
-    if 'chat_history' not in st.session_state:
-        st.session_state['chat_history'] = ChatMessageHistory()
-    if 'full_history' not in st.session_state:
-        st.session_state['full_history'] = []
 
 # 메시지 저장 함수
 def save_message(role, content):
     message = ChatMessage(role=role, content=content)
     st.session_state['messages'].append(message)
-    st.session_state['chat_history'].add_message(message)
-    st.session_state['full_history'].append(message)
 
 # 프롬프트 템플릿 생성 함수
 def create_prompt_template(user_input, info):
-    return ChatPromptTemplate.from_template(f"""
+    all_messages = st.session_state['messages']
+    
+    # 전체 메시지를 역순으로 정렬
+    reversed_messages = list(reversed(all_messages))
+    
+    # 최신 질문을 제외한 메시지 리스트 생성
+    if reversed_messages and reversed_messages[0].role == "user":
+        reversed_messages = reversed_messages[1:]
+    
+    # 최신 6개의 대화 쌍만 포함
+    history = reversed_messages[:6]
+    
+    # 최근 대화 내용 포맷팅
+    recent_message_pairs = "\n".join(f"{msg.role}: {msg.content}" for msg in reversed(history))
+
+    return f"""
         나의 이름은 'MyEcho'로, AI 어시스턴트입니다. 
         저는 오직 'watermoon'이라는 사람에 대한 정보만을 바탕으로 답변을 제공합니다. 
         'watermoon'은 이 프로그램을 만든 실존 인물입니다.
         
-        사용자가 물어본 질문: {user_input}
-        
         아래에 제공된 정보만을 참고하여 질문에 답변하세요. 주어진 정보 외의 내용을 추측하거나 추가하지 마세요:
         {info}
         
-        답변:""")
+        최근 대화 내용:
+        {recent_message_pairs}
+        
+        사용자가 물어본 질문: {user_input}
+
+        답변:
+    """
 
 # 사용자 입력 처리 함수
 def process_input(user_input, retriever):
@@ -56,7 +67,6 @@ def process_input(user_input, retriever):
     else:
         # retriever를 사용하여 문서 가져오기
         result = retriever.get_relevant_documents(user_input)
-        print(result)
 
         # 가져온 문서의 page_content를 직접 반환
         return result[0].page_content
@@ -67,8 +77,8 @@ def display_chat_history():
         st.chat_message(message.role).write(message.content)
 
 # LLM 스트리밍 응답 함수
-def llm_stream(model_name, messages):
-    response = ollama.chat(model_name, messages, stream=True)
+def llm_stream(model_name, prompt):
+    response = ollama.chat(model_name, [{"content": prompt, "role": "user"}], stream=True)
     for chunk in response:
         yield chunk['message']['content']
 
@@ -113,24 +123,19 @@ if user_input:
     st.chat_message("user").write(user_input)
     save_message("user", user_input)
     info = process_input(user_input, retriever)
-    prompt_template = create_prompt_template(user_input, info)
-
-    # 이전 대화 내용 추가 및 프롬프트 생성
-    recent_messages = st.session_state['chat_history'].messages[-10:]
-    previous_messages = "\n".join(f"{msg.role}: {msg.content}" for msg in recent_messages)
-    final_prompt = f"{previous_messages}\n\n{prompt_template}"
+    prompt = create_prompt_template(user_input, info)
 
     # AI 응답을 스트리밍하면서 UI에 표시
     with st.chat_message("assistant"):
         chat_box = st.empty()
-        response_message = chat_box.write_stream(llm_stream(llm_name, [{"content": final_prompt, "role": "user"}]))
+        response_message = chat_box.write_stream(llm_stream(llm_name, prompt))
 
     # 최종 응답을 세션 상태에 저장
     save_message("assistant", response_message)
 
 # 사이드바에서 대화 다운로드 버튼
-if st.session_state['full_history']:
-    chat_history_text = "\n".join(f"{msg.role}: {msg.content}" for msg in st.session_state['full_history'])
+if st.session_state['messages']:
+    chat_history_text = "\n".join(f"{msg.role}: {msg.content}" for msg in st.session_state['messages'])
     st.sidebar.download_button(
         label="Download Chat",
         data=chat_history_text,
@@ -139,6 +144,6 @@ if st.session_state['full_history']:
     )
 
 # 대화 리셋 버튼 구현
-if st.session_state['full_history'] and st.sidebar.button("Reset Chat"):
+if st.session_state['messages'] and st.sidebar.button("Reset Chat"):
     st.session_state.clear()
     st.rerun()
